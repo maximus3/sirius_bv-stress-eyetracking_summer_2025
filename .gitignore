@@ -126,3 +126,6 @@ docs/_build/
 
 # UV specific (современный менеджер пакетов Python)
 .uv/
+
+# ruff
+.ruff_cache/

@@ -13,8 +13,93 @@ from scipy.stats import (
 )
 import os
 import warnings
+import argparse
 
-warnings.filterwarnings("ignore")
+# =============================================================================
+# КОНФИГУРАЦИЯ И КОНСТАНТЫ
+# =============================================================================
+
+# Функция для парсинга аргументов командной строки
+def parse_arguments():
+    """Парсинг аргументов командной строки"""
+    parser = argparse.ArgumentParser(
+        description="Комплексный анализ данных айтрекинга для детекции стресса",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    parser.add_argument(
+        "--word-file",
+        type=str,
+        default="ia_avg.xls",
+        help="Путь к файлу с данными на уровне слов"
+    )
+    
+    parser.add_argument(
+        "--trial-file", 
+        type=str,
+        default="events.xls",
+        help="Путь к файлу с данными на уровне трайлов"
+    )
+    
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="results",
+        help="Путь к папке для сохранения результатов"
+    )
+    
+    parser.add_argument(
+        "--show-plots",
+        action="store_true",
+        help="Отображать созданные графики (по умолчанию только сохранять)"
+    )
+    
+    return parser.parse_args()
+
+# Глобальные переменные для конфигурации (будут установлены из аргументов)
+WORD_DATA_FILE = None
+TRIAL_DATA_FILE = None  
+RESULTS_DIR = None
+SHOW_PLOTS = False
+
+# Параметры данных
+WORD_NUMERIC_COLUMNS_POSITIONS = [3, 4, 7, 8, 9, 10, 11]
+WORD_COLUMN_FOR_FILTERING = 6  # Колонка с текстом слова для фильтрации
+
+# Пороги для групп стресса
+STRESS_THRESHOLD = 3  # Трайлы 1-STRESS_THRESHOLD без стресса, остальные со стрессом
+
+# Параметры трайлов (будут определены динамически из данных)
+TOTAL_TRIALS = None  # Будет определено автоматически при загрузке данных
+MAX_TRIAL_NUMBER = None  # Максимальный номер трайла
+
+# Статистические параметры
+ALPHA_LEVEL = 0.05
+MIN_SAMPLE_SIZE_WARNING = 30  # Минимальный размер выборки для надежных выводов
+
+# Пороги размеров эффектов Cohen's d
+EFFECT_SIZE_SMALL = 0.2
+EFFECT_SIZE_MEDIUM = 0.5  
+EFFECT_SIZE_LARGE = 0.8
+
+# Параметры визуализации
+FIGURE_DPI = 300
+COLORS_NO_STRESS = "#2E86C1"  # Синий
+COLORS_STRESS = "#E74C3C"  # Красный
+
+# Настройки для предупреждений
+SHOW_STATISTICAL_WARNINGS = False
+
+# =============================================================================
+
+# Настройка warnings
+if not SHOW_STATISTICAL_WARNINGS:
+    warnings.filterwarnings("ignore")
+    # Подавляем специфичные matplotlib warnings
+    warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+    warnings.filterwarnings("ignore", message=".*labels.*parameter.*boxplot.*")
+    warnings.filterwarnings("ignore", message=".*Glyph.*missing from font.*")
+    plt.set_loglevel('WARNING')
 
 # Настройка для красивых графиков
 plt.style.use("seaborn-v0_8")
@@ -25,12 +110,160 @@ plt.rcParams["axes.labelsize"] = 12
 
 
 def ensure_results_directory():
-    """Создает папку results если она не существует"""
-    if not os.path.exists("results"):
-        os.makedirs("results")
-        print("📁 Создана папка 'results' для сохранения графиков")
+    """Создает папку для результатов если она не существует"""
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR)
+        print(f"📁 Создана папка '{RESULTS_DIR}' для сохранения графиков")
     else:
-        print("📁 Папка 'results' уже существует")
+        print(f"📁 Папка '{RESULTS_DIR}' уже существует")
+
+
+def show_plot_conditionally():
+    """Показывает график только если установлен флаг SHOW_PLOTS"""
+    if SHOW_PLOTS:
+        plt.show()
+    else:
+        plt.close()  # Закрываем фигуру для экономии памяти
+
+
+def determine_trial_parameters(trial_data):
+    """Определяет параметры трайлов динамически из данных"""
+    global TOTAL_TRIALS, MAX_TRIAL_NUMBER
+    
+    TOTAL_TRIALS = len(trial_data)
+    MAX_TRIAL_NUMBER = trial_data['trial'].max()
+    
+    print(f"📊 ОПРЕДЕЛЕНЫ ПАРАМЕТРЫ ТРАЙЛОВ:")
+    print(f"   • Общее количество трайлов: {TOTAL_TRIALS}")
+    print(f"   • Максимальный номер трайла: {MAX_TRIAL_NUMBER}")
+    print(f"   • Порог стресса: трайлы 1-{STRESS_THRESHOLD} (без стресса), {STRESS_THRESHOLD+1}-{MAX_TRIAL_NUMBER} (стресс)")
+    
+    return TOTAL_TRIALS, MAX_TRIAL_NUMBER
+
+
+def create_dynamic_phase_mapping(max_trial):
+    """Создает динамический маппинг фаз в зависимости от количества трайлов"""
+    phase_mapping = {}
+    
+    # Базовая линия: трайлы 1 до STRESS_THRESHOLD
+    for i in range(1, STRESS_THRESHOLD + 1):
+        if i <= max_trial:
+            phase_mapping[i] = f"baseline_{i}"
+    
+    # Стрессовые трайлы: от STRESS_THRESHOLD+1 до max_trial
+    stress_trials = list(range(STRESS_THRESHOLD + 1, max_trial + 1))
+    
+    if len(stress_trials) == 0:
+        # Нет стрессовых трайлов
+        pass
+    elif len(stress_trials) == 1:
+        # Только один стрессовый трайл
+        phase_mapping[stress_trials[0]] = "stress_peak"
+    elif len(stress_trials) == 2:
+        # Два стрессовых трайла: пик и восстановление
+        phase_mapping[stress_trials[0]] = "stress_peak"
+        phase_mapping[stress_trials[1]] = "stress_recovery"
+    else:
+        # Три и более стрессовых трайлов: пик, адаптация(и), восстановление
+        phase_mapping[stress_trials[0]] = "stress_peak"
+        phase_mapping[stress_trials[-1]] = "stress_recovery"
+        
+        # Промежуточные трайлы - адаптация
+        for i, trial_num in enumerate(stress_trials[1:-1], 1):
+            phase_mapping[trial_num] = f"stress_adapt_{i}"
+    
+    return phase_mapping
+
+
+def validate_sample_size(n, analysis_name="анализ"):
+    """Проверяет достаточность размера выборки и выводит предупреждения"""
+    if n < MIN_SAMPLE_SIZE_WARNING:
+        print(f"🚨 КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ({analysis_name}):")
+        print(f"   Размер выборки N={n} КРИТИЧЕСКИ МАЛ!")
+        print(f"   Для надежных статистических выводов требуется N ≥ {MIN_SAMPLE_SIZE_WARNING}")
+        print(f"   ⚠️ ВСЕ РЕЗУЛЬТАТЫ МОГУТ БЫТЬ НЕНАДЕЖНЫМИ!")
+        return False
+    return True
+
+
+def apply_bonferroni_correction(p_values, alpha=ALPHA_LEVEL):
+    """Применяет поправку Бонферрони на множественные сравнения"""
+    if not p_values or len(p_values) == 0:
+        return []
+    
+    corrected_alpha = alpha / len(p_values)
+    corrected_p_values = [min(1.0, p * len(p_values)) for p in p_values]
+    
+    print(f"🔧 ПОПРАВКА БОНФЕРРОНИ:")
+    print(f"   Количество тестов: {len(p_values)}")
+    print(f"   Скорректированный α: {corrected_alpha:.4f}")
+    
+    return corrected_p_values, corrected_alpha
+
+
+def get_phase_color(phase_name):
+    """Возвращает цвет для любой фазы, включая динамические"""
+    if phase_name.startswith("baseline"):
+        baseline_colors = ["#3498DB", "#5DADE2", "#85C1E9"]
+        try:
+            baseline_num = int(phase_name.split("_")[1]) - 1
+            return baseline_colors[baseline_num] if baseline_num < len(baseline_colors) else "#85C1E9"
+        except:
+            return "#3498DB"
+    elif phase_name == "stress_peak":
+        return COLORS_STRESS
+    elif phase_name.startswith("stress_adapt"):
+        return "#F1948A"
+    elif phase_name == "stress_recovery":
+        return "#F8C471"
+    else:
+        return "#95A5A6"  # Серый для неизвестных фаз
+
+
+def interpret_effect_size_with_warnings(cohens_d, p_value, n_total, variable_name):
+    """
+    Интерпретирует размер эффекта с критическими предупреждениями о надежности
+    """
+    abs_d = abs(cohens_d)
+    
+    if abs_d >= EFFECT_SIZE_LARGE:
+        size_text = "большой"
+    elif abs_d >= EFFECT_SIZE_MEDIUM:
+        size_text = "средний"
+    elif abs_d >= EFFECT_SIZE_SMALL:
+        size_text = "малый"
+    else:
+        size_text = "пренебрежимо малый"
+    
+    # КРИТИЧЕСКИ ВАЖНО: Предупреждения о надежности
+    warnings_list = []
+    
+    # Предупреждение о малой выборке
+    if n_total < MIN_SAMPLE_SIZE_WARNING:
+        warnings_list.append(f"Критически малый размер выборки (N={n_total})")
+    
+    # Предупреждение о незначимых результатах
+    if p_value >= ALPHA_LEVEL:
+        warnings_list.append("Размер эффекта ненадежен при незначимом статистическом результате")
+        if n_total < 20:
+            warnings_list.append("При малой выборке и p≥0.05 Cohen's d может вводить в заблуждение")
+    
+    # Предупреждение об экстремальных значениях
+    if abs_d > 2.0 and p_value >= ALPHA_LEVEL:
+        warnings_list.append("Подозрительно большой размер эффекта при незначимом результате")
+    
+    result_text = f"📏 Размер эффекта: {size_text} (d = {cohens_d:.3f})"
+    
+    if warnings_list:
+        result_text += "\n   ⚠️ ПРЕДУПРЕЖДЕНИЯ О НАДЕЖНОСТИ:"
+        for warning in warnings_list:
+            result_text += f"\n     - {warning}"
+        
+        # Особо критическое предупреждение
+        if p_value >= ALPHA_LEVEL and n_total < MIN_SAMPLE_SIZE_WARNING:
+            result_text += f"\n   🚨 НЕ ИНТЕРПРЕТИРОВАТЬ как доказательство различий!"
+    
+    return result_text, warnings_list
 
 
 def load_comprehensive_data():
@@ -42,29 +275,24 @@ def load_comprehensive_data():
     print("🔄 КОМПЛЕКСНАЯ ЗАГРУЗКА ДАННЫХ АЙТРЕКИНГА")
     print("=" * 70)
 
-    # 1. ДАННЫЕ НА УРОВНЕ СЛОВ (ia_avg.xls)
+    # 1. ДАННЫЕ НА УРОВНЕ СЛОВ
     print("📖 Загрузка данных на уровне слов...")
-    word_data = pd.read_csv("ia_avg.xls", sep="\t", encoding="utf-16", skiprows=1)
+    word_data = pd.read_csv(WORD_DATA_FILE, sep="\t", encoding="utf-16", skiprows=1)
     col_names = list(word_data.columns)
 
     # Создаем группировку по условиям для данных слов
     trial_col = col_names[0]
     word_data["trial"] = word_data[trial_col].astype(int)
     word_data["condition"] = word_data["trial"].apply(
-        lambda x: "no_stress" if x <= 3 else "stress"
+        lambda x: "no_stress" if x <= STRESS_THRESHOLD else "stress"
     )
 
+    # Определяем максимальный номер трайла для создания динамического маппинга фаз
+    max_trial_in_words = word_data["trial"].max()
+    phase_mapping = create_dynamic_phase_mapping(max_trial_in_words)
+    
     # Создаем детальную группировку по фазам для данных слов
-    word_data["stress_phase"] = word_data["trial"].map(
-        {
-            1: "baseline_1",
-            2: "baseline_2",
-            3: "baseline_3",
-            4: "stress_peak",
-            5: "stress_adapt",
-            6: "stress_recovery",
-        }
-    )
+    word_data["stress_phase"] = word_data["trial"].map(phase_mapping)
 
     # Русские названия для показателей слов
     word_measure_names = {
@@ -78,9 +306,8 @@ def load_comprehensive_data():
     }
 
     # Находим числовые колонки для слов
-    numeric_cols_positions = [3, 4, 7, 8, 9, 10, 11]
     word_numeric_cols = [
-        col_names[i] for i in numeric_cols_positions if i < len(col_names)
+        col_names[i] for i in WORD_NUMERIC_COLUMNS_POSITIONS if i < len(col_names)
     ]
     word_short_names = [
         "IA_FIRST_FIXATION_DURATION",
@@ -105,17 +332,20 @@ def load_comprehensive_data():
             word_data[word_short_names[i]] = word_data[col]
 
     # Фильтрация валидных данных слов
-    word_col = col_names[6]
+    word_col = col_names[WORD_COLUMN_FOR_FILTERING]
     word_data = word_data.dropna(subset=[word_col])
     word_data = word_data[word_data[word_col] != "."]
     word_data = word_data[word_data[word_col] != "–"]
     word_data = word_data[word_data[word_col] != "—"]
 
     print(f"✅ Загружено {len(word_data)} наблюдений на уровне слов")
+    
+    # Критическая проверка размера выборки для слов
+    validate_sample_size(len(word_data), "данные на уровне слов")
 
-    # 2. ДАННЫЕ НА УРОВНЕ ТРАЙЛОВ (events.xls)
+    # 2. ДАННЫЕ НА УРОВНЕ ТРАЙЛОВ
     print("📊 Загрузка данных на уровне трайлов...")
-    trial_data = pd.read_csv("events.xls", sep="\t", encoding="utf-16", header=0)
+    trial_data = pd.read_csv(TRIAL_DATA_FILE, sep="\t", encoding="utf-16", header=0)
 
     # Удаляем строку с описаниями и берем только данные
     trial_data = trial_data.iloc[1:].reset_index(drop=True)
@@ -129,23 +359,31 @@ def load_comprehensive_data():
     # Добавляем информацию о трайлах
     trial_data["trial"] = range(1, len(trial_data) + 1)
     trial_data["condition"] = trial_data["trial"].apply(
-        lambda x: "no_stress" if x <= 3 else "stress"
+        lambda x: "no_stress" if x <= STRESS_THRESHOLD else "stress"
     )
-    trial_data["phase"] = trial_data["trial"].map(
-        {
-            1: "baseline_1",
-            2: "baseline_2",
-            3: "baseline_3",
-            4: "stress_peak",
-            5: "stress_adapt",
-            6: "stress_recovery",
-        }
-    )
+    
+    # Определяем параметры трайлов динамически
+    determine_trial_parameters(trial_data)
+    
+    # Создаем динамическое маппинг фаз
+    phase_mapping = create_dynamic_phase_mapping(MAX_TRIAL_NUMBER)
+    trial_data["phase"] = trial_data["trial"].map(phase_mapping)
 
+    # Вычисляем долю посещенных зон (в процентах) перед переименованием
+    # INTEREST_AREA_COUNT - предпоследняя колонка (индекс -2)
+    # VISITED_INTEREST_AREA_COUNT - последняя колонка (индекс -1)
+    interest_areas_count = pd.to_numeric(trial_data.iloc[:, 13], errors='coerce')  # INTEREST_AREA_COUNT
+    visited_areas_count = pd.to_numeric(trial_data.iloc[:, 14], errors='coerce')   # VISITED_INTEREST_AREA_COUNT
+    
+    # Создаем долю посещенных зон в процентах
+    visited_areas_percent = (visited_areas_count / interest_areas_count * 100).fillna(0)
+    
+
+    
     # Переименовываем колонки для удобства
     trial_data.columns = [
         "blinks",
-        "fixations",
+        "fixations", 
         "fixation_duration_mean",
         "fixation_duration_median",
         "fixation_duration_sd",
@@ -155,22 +393,28 @@ def load_comprehensive_data():
         "saccade_amplitude_median",
         "saccade_amplitude_sd",
         "saccades",
-        "samples",
+        "samples", 
         "trial_duration",
-        "interest_areas",
-        "visited_areas",
+        "interest_areas_total",
+        "visited_areas_absolute",
         "trial",
-        "condition",
+        "condition", 
         "phase",
     ]
+    
+    # Заменяем абсолютное количество на долю в процентах
+    trial_data["visited_areas"] = visited_areas_percent
 
     print(f"✅ Загружено {len(trial_data)} трайлов")
     print(
-        f"   • Без стресса (трайлы 1-3): {len(trial_data[trial_data['condition'] == 'no_stress'])} трайла"
+        f"   • Без стресса (трайлы 1-{STRESS_THRESHOLD}): {len(trial_data[trial_data['condition'] == 'no_stress'])} трайла"
     )
     print(
-        f"   • Со стрессом (трайлы 4-6): {len(trial_data[trial_data['condition'] == 'stress'])} трайла"
+        f"   • Со стрессом (трайлы {STRESS_THRESHOLD+1}-{MAX_TRIAL_NUMBER}): {len(trial_data[trial_data['condition'] == 'stress'])} трайла"
     )
+    
+    # КРИТИЧЕСКАЯ проверка размера выборки для трайлов
+    validate_sample_size(len(trial_data), "данные на уровне трайлов")
 
     return word_data, trial_data, word_measure_names
 
@@ -193,6 +437,7 @@ def analyze_word_level_differences(word_data, word_measure_names):
     ]
 
     results = []
+    p_values_for_correction = []
 
     # Данные по условиям
     no_stress = word_data[word_data["condition"] == "no_stress"]
@@ -201,6 +446,10 @@ def analyze_word_level_differences(word_data, word_measure_names):
     print(f"📊 СРАВНЕНИЕ ГРУПП НА УРОВНЕ СЛОВ:")
     print(f"   Без стресса: {len(no_stress)} наблюдений")
     print(f"   Со стрессом: {len(stress)} наблюдений")
+    
+    # Проверяем размер выборки
+    total_n = len(no_stress) + len(stress)
+    validate_sample_size(total_n, "анализ на уровне слов")
 
     for measure in measures:
         if measure not in word_data.columns:
@@ -244,7 +493,7 @@ def analyze_word_level_differences(word_data, word_measure_names):
                 test_name = "Недостаточно данных"
 
         if not np.isnan(p_value):
-            if p_value < 0.05:
+            if p_value < ALPHA_LEVEL:
                 significance = "✅ H0 ОТКЛОНЯЕТСЯ (p < 0.05)"
                 hypothesis_result = "Различия СТАТИСТИЧЕСКИ ЗНАЧИМЫ"
             else:
@@ -252,24 +501,23 @@ def analyze_word_level_differences(word_data, word_measure_names):
                 hypothesis_result = "Различия статистически НЕ ЗНАЧИМЫ"
             print(f"🧪 {test_name}: p = {p_value:.4f} - {significance}")
             print(f"⚖️ Заключение: {hypothesis_result}")
+            p_values_for_correction.append(p_value)
         else:
             print(f"🧪 {test_name}: недостаточно данных для проверки гипотез")
+            p_values_for_correction.append(np.nan)
 
-        # Размер эффекта (Cohen's d)
+        # Размер эффекта (Cohen's d) с критическими предупреждениями
         pooled_std = np.sqrt(
             ((len(no_stress_vals) - 1) * ns_std**2 + (len(stress_vals) - 1) * s_std**2)
             / (len(no_stress_vals) + len(stress_vals) - 2)
         )
         cohens_d = (s_mean - ns_mean) / pooled_std if pooled_std > 0 else 0
-
-        effect_size = (
-            "большой"
-            if abs(cohens_d) >= 0.8
-            else "средний"
-            if abs(cohens_d) >= 0.5
-            else "малый"
+        
+        # Интерпретация с предупреждениями
+        effect_interpretation, warnings = interpret_effect_size_with_warnings(
+            cohens_d, p_value, len(no_stress_vals) + len(stress_vals), measure
         )
-        print(f"📏 Размер эффекта: {effect_size} (d = {cohens_d:.3f})")
+        print(effect_interpretation)
 
         results.append(
             {
@@ -284,9 +532,19 @@ def analyze_word_level_differences(word_data, word_measure_names):
                 "change_direction": change_direction,
                 "p_value": p_value,
                 "cohens_d": cohens_d,
-                "significant": p_value < 0.05 if not np.isnan(p_value) else False,
+                "significant": p_value < ALPHA_LEVEL if not np.isnan(p_value) else False,
+                "reliability_warnings": warnings,
             }
         )
+    
+    # Применяем поправку на множественные сравнения
+    if len(p_values_for_correction) > 1:
+        print(f"\n🔧 ПОПРАВКА НА МНОЖЕСТВЕННЫЕ СРАВНЕНИЯ:")
+        valid_p_values = [p for p in p_values_for_correction if not np.isnan(p)]
+        if valid_p_values:
+            corrected_p_values, corrected_alpha = apply_bonferroni_correction(valid_p_values)
+            significant_after_correction = sum(1 for p in corrected_p_values if p < ALPHA_LEVEL)
+            print(f"   После поправки Бонферрони: {significant_after_correction}/{len(valid_p_values)} значимых результатов")
 
     return results
 
@@ -327,6 +585,7 @@ def analyze_trial_level_differences(trial_data):
     }
 
     results = []
+    p_values_for_correction = []
 
     # Данные по условиям
     no_stress = trial_data[trial_data["condition"] == "no_stress"]
@@ -335,6 +594,10 @@ def analyze_trial_level_differences(trial_data):
     print(f"📊 СРАВНЕНИЕ ГРУПП:")
     print(f"   Без стресса: {len(no_stress)} трайла")
     print(f"   Со стрессом: {len(stress)} трайла")
+    
+    # КРИТИЧЕСКАЯ проверка размера выборки
+    total_n = len(no_stress) + len(stress)
+    validate_sample_size(total_n, "анализ на уровне трайлов")
 
     for measure in measures:
         if measure not in trial_data.columns:
@@ -359,21 +622,18 @@ def analyze_trial_level_differences(trial_data):
         change_symbol = "📈" if change > 0 else "📉"
         print(f"{change_symbol} Изменение: {change:+.2f} ({change_pct:+.1f}%)")
 
-        # Статистический тест (проверка H0: μ₁ = μ₂ против H1: μ₁ ≠ μ₂)
-        # С такой маленькой выборкой (3 vs 3) используем точные тесты
+        # Статистический тест с предупреждением о малой выборке
         if len(no_stress_vals) >= 3 and len(stress_vals) >= 3:
-            # Wilcoxon rank-sum test (аналог Mann-Whitney для маленьких выборок)
             try:
                 stat, p_value = mannwhitneyu(
                     no_stress_vals, stress_vals, alternative="two-sided"
                 )
                 test_name = "Критерий Манна-Уитни"
             except:
-                # Если не хватает данных, используем t-test
                 stat, p_value = ttest_ind(no_stress_vals, stress_vals)
                 test_name = "t-критерий"
 
-            if p_value < 0.05:
+            if p_value < ALPHA_LEVEL:
                 significance = "✅ H0 ОТКЛОНЯЕТСЯ (p < 0.05)"
                 hypothesis_result = "Различия СТАТИСТИЧЕСКИ ЗНАЧИМЫ"
             else:
@@ -382,13 +642,17 @@ def analyze_trial_level_differences(trial_data):
 
             print(f"🧪 {test_name}: p = {p_value:.4f} - {significance}")
             print(f"⚖️ Заключение: {hypothesis_result}")
+            
+            # КРИТИЧЕСКОЕ предупреждение о малой выборке
+            if p_value >= ALPHA_LEVEL:
+                print(f"🚨 ВНИМАНИЕ: Критически малый размер выборки (N = {total_n})")
+                print(f"   При такой малой выборке НЕВОЗМОЖНО делать выводы:")
+                print(f"   • НИ о наличии различий (если p ≥ 0.05)")
+                print(f"   • НИ об отсутствии различий")
 
-            if p_value >= 0.05:
-                print(
-                    f"💡 Примечание: Малый размер выборки (N = 6) может влиять на мощность теста"
-                )
+            p_values_for_correction.append(p_value)
 
-            # Размер эффекта (Cohen's d)
+            # Размер эффекта с критическими предупреждениями
             pooled_std = np.sqrt(
                 (
                     (len(no_stress_vals) - 1) * ns_std**2
@@ -397,20 +661,19 @@ def analyze_trial_level_differences(trial_data):
                 / (len(no_stress_vals) + len(stress_vals) - 2)
             )
             cohens_d = (s_mean - ns_mean) / pooled_std if pooled_std > 0 else 0
-
-            effect_size = (
-                "большой"
-                if abs(cohens_d) >= 0.8
-                else "средний"
-                if abs(cohens_d) >= 0.5
-                else "малый"
+            
+            # Интерпретация с предупреждениями
+            effect_interpretation, warnings = interpret_effect_size_with_warnings(
+                cohens_d, p_value, len(no_stress_vals) + len(stress_vals), measure
             )
-            print(f"📏 Размер эффекта: {effect_size} (d = {cohens_d:.3f})")
+            print(effect_interpretation)
 
         else:
             p_value = np.nan
             test_name = "Недостаточно данных"
             cohens_d = 0
+            warnings = ["Критически малая выборка"]
+            p_values_for_correction.append(np.nan)
 
         results.append(
             {
@@ -424,9 +687,19 @@ def analyze_trial_level_differences(trial_data):
                 "change_percent": change_pct,
                 "p_value": p_value,
                 "cohens_d": cohens_d,
-                "significant": p_value < 0.05 if not np.isnan(p_value) else False,
+                "significant": p_value < ALPHA_LEVEL if not np.isnan(p_value) else False,
+                "reliability_warnings": warnings if 'warnings' in locals() else [],
             }
         )
+    
+    # Применяем поправку на множественные сравнения
+    if len(p_values_for_correction) > 1:
+        print(f"\n🔧 ПОПРАВКА НА МНОЖЕСТВЕННЫЕ СРАВНЕНИЯ:")
+        valid_p_values = [p for p in p_values_for_correction if not np.isnan(p)]
+        if valid_p_values:
+            corrected_p_values, corrected_alpha = apply_bonferroni_correction(valid_p_values)
+            significant_after_correction = sum(1 for p in corrected_p_values if p < ALPHA_LEVEL)
+            print(f"   После поправки Бонферрони: {significant_after_correction}/{len(valid_p_values)} значимых результатов")
 
     return results
 
@@ -457,7 +730,7 @@ def analyze_trial_dynamics(trial_data):
         "runs": "Количество забеганий",
         "saccade_amplitude_mean": "Амплитуда саккад (°)",
         "saccades": "Количество саккад",
-        "visited_areas": "Посещенные зоны",
+        "visited_areas": "Покрытие текста (%)",
     }
 
     dynamics = {}
@@ -475,7 +748,7 @@ def analyze_trial_dynamics(trial_data):
         phases = []
         trial_stats[measure] = {}
 
-        for trial in range(1, 7):
+        for trial in range(1, MAX_TRIAL_NUMBER + 1):
             val = trial_data[trial_data["trial"] == trial][measure].iloc[0]
             phase = trial_data[trial_data["trial"] == trial]["phase"].iloc[0]
             values.append(val)
@@ -507,11 +780,13 @@ def analyze_trial_dynamics(trial_data):
 
         # Определяем паттерн
         peak_trial = np.argmax(np.abs(changes)) + 1
-        if peak_trial == 4:  # Пик в трайле 4
-            if abs(changes[5]) < abs(changes[3]):  # Восстановление к трайлу 6
-                pattern = "🎯 ПИК в Т4 → ВОССТАНОВЛЕНИЕ"
+        expected_peak_trial = STRESS_THRESHOLD + 1  # Первый стрессовый трайл
+        
+        if peak_trial == expected_peak_trial:  # Пик в ожидаемом первом стрессовом трайле
+            if len(changes) > expected_peak_trial and abs(changes[-1]) < abs(changes[expected_peak_trial - 1]):  # Восстановление к последнему трайлу
+                pattern = f"🎯 ПИК в Т{expected_peak_trial} → ВОССТАНОВЛЕНИЕ"
             else:
-                pattern = "🔥 ПИК в Т4 → БЕЗ ВОССТАНОВЛЕНИЯ"
+                pattern = f"🔥 ПИК в Т{expected_peak_trial} → БЕЗ ВОССТАНОВЛЕНИЯ"
         else:
             pattern = "❓ НЕСТАНДАРТНЫЙ ПАТТЕРН"
 
@@ -563,7 +838,7 @@ def analyze_word_dynamics(word_data, word_measure_names):
 
         # Вычисляем статистику по каждому трайлу
         trial_values = []
-        for trial in range(1, 7):
+        for trial in range(1, MAX_TRIAL_NUMBER + 1):
             trial_data = word_data[word_data["trial"] == trial][measure].dropna()
             if len(trial_data) > 0:
                 mean_val = trial_data.mean()
@@ -591,22 +866,23 @@ def analyze_word_dynamics(word_data, word_measure_names):
         peak_vs_recovery_p = np.nan
 
         try:
-            # Сравнение базовой линии (1-3) с пиком стресса (4)
+            # Сравнение базовой линии с пиком стресса (первый стрессовый трайл)
             baseline_data = []
-            for t in [1, 2, 3]:
+            for t in range(1, STRESS_THRESHOLD + 1):
                 baseline_data.extend(
                     word_data[word_data["trial"] == t][measure].dropna().tolist()
                 )
-            peak_data = word_data[word_data["trial"] == 4][measure].dropna().tolist()
+            peak_trial = STRESS_THRESHOLD + 1  # Первый стрессовый трайл
+            peak_data = word_data[word_data["trial"] == peak_trial][measure].dropna().tolist()
 
             if len(baseline_data) > 0 and len(peak_data) > 0:
                 _, baseline_vs_peak_p = mannwhitneyu(
                     baseline_data, peak_data, alternative="two-sided"
                 )
 
-            # Сравнение пика стресса (4) с восстановлением (6)
+            # Сравнение пика стресса с восстановлением (последний трайл)
             recovery_data = (
-                word_data[word_data["trial"] == 6][measure].dropna().tolist()
+                word_data[word_data["trial"] == MAX_TRIAL_NUMBER][measure].dropna().tolist()
             )
             if len(peak_data) > 0 and len(recovery_data) > 0:
                 _, peak_vs_recovery_p = mannwhitneyu(
@@ -623,9 +899,9 @@ def analyze_word_dynamics(word_data, word_measure_names):
         }
 
         if not np.isnan(baseline_vs_peak_p):
-            print(f"   🧪 База vs Пик: p = {baseline_vs_peak_p:.4f}")
+            print(f"   🧪 База vs Т{peak_trial}: p = {baseline_vs_peak_p:.4f}")
         if not np.isnan(peak_vs_recovery_p):
-            print(f"   🧪 Пик vs Восст.: p = {peak_vs_recovery_p:.4f}")
+            print(f"   🧪 Т{peak_trial} vs Т{MAX_TRIAL_NUMBER}: p = {peak_vs_recovery_p:.4f}")
 
     return word_trial_stats, word_dynamics_results
 
@@ -775,8 +1051,8 @@ def create_enhanced_word_visualizations(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.93)
-    plt.savefig("results/word_level_stress_analysis.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.savefig(f"{RESULTS_DIR}/word_level_stress_analysis.png", dpi=FIGURE_DPI, bbox_inches="tight")
+    show_plot_conditionally()
 
 
 def create_dynamics_visualizations(
@@ -821,7 +1097,7 @@ def create_dynamics_visualizations(
         means = [trial_stats[measure][t]["mean"] for t in trials]
         stds = [trial_stats[measure][t]["std"] for t in trials]
         phases = [trial_stats[measure][t]["phase"] for t in trials]
-        colors = [phase_colors[phase] for phase in phases]
+        colors = [get_phase_color(phase) for phase in phases]
 
         # Создаем bar plot с разными цветами для фаз
         bars = ax.bar(
@@ -924,8 +1200,8 @@ def create_dynamics_visualizations(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.92)
-    plt.savefig("results/trial_level_dynamics.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.savefig(f"{RESULTS_DIR}/trial_level_dynamics.png", dpi=FIGURE_DPI, bbox_inches="tight")
+    show_plot_conditionally()
 
     # 2. ДИНАМИКА НА УРОВНЕ СЛОВ
     print("📝 Графики динамики на уровне слов...")
@@ -947,7 +1223,7 @@ def create_dynamics_visualizations(
         means = [word_trial_stats[measure][t]["mean"] for t in trials]
         stds = [word_trial_stats[measure][t]["std"] for t in trials]
         phases = [word_trial_stats[measure][t]["phase"] for t in trials]
-        colors = [phase_colors[phase] for phase in phases]
+        colors = [get_phase_color(phase) for phase in phases]
 
         # Создаем bar plot с error bars
         bars = ax.bar(
@@ -986,16 +1262,17 @@ def create_dynamics_visualizations(
         result = word_dynamics_results.get(measure)
         if result:
             significance_text = ""
+            peak_trial_num = STRESS_THRESHOLD + 1
             if (
                 not np.isnan(result["baseline_vs_peak_p"])
-                and result["baseline_vs_peak_p"] < 0.05
+                and result["baseline_vs_peak_p"] < ALPHA_LEVEL
             ):
-                significance_text += "База↔4: ✅ "
+                significance_text += f"База↔{peak_trial_num}: ✅ "
             if (
                 not np.isnan(result["peak_vs_recovery_p"])
-                and result["peak_vs_recovery_p"] < 0.05
+                and result["peak_vs_recovery_p"] < ALPHA_LEVEL
             ):
-                significance_text += "4↔6: ✅"
+                significance_text += f"{peak_trial_num}↔{MAX_TRIAL_NUMBER}: ✅"
 
             if significance_text:
                 ax.text(
@@ -1031,8 +1308,8 @@ def create_dynamics_visualizations(
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.92)
-    plt.savefig("results/word_level_dynamics.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.savefig(f"{RESULTS_DIR}/word_level_dynamics.png", dpi=FIGURE_DPI, bbox_inches="tight")
+    show_plot_conditionally()
 
 
 def create_comprehensive_visualizations(trial_data, comparison_results, dynamics):
@@ -1060,15 +1337,15 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
         # Создаем boxplot
         bp = ax.boxplot(
             [no_stress_data, stress_data],
-            labels=["Без стресса\n(Т1-3)", "Со стрессом\n(Т4-6)"],
+            labels=[f"Без стресса\n(Т1-{STRESS_THRESHOLD})", f"Со стрессом\n(Т{STRESS_THRESHOLD+1}-{MAX_TRIAL_NUMBER})"],
             patch_artist=True,
             widths=0.6,
         )
 
         # Раскрашиваем
-        bp["boxes"][0].set_facecolor("#2E86C1")
+        bp["boxes"][0].set_facecolor(COLORS_NO_STRESS)
         bp["boxes"][0].set_alpha(0.7)
-        bp["boxes"][1].set_facecolor("#E74C3C")
+        bp["boxes"][1].set_facecolor(COLORS_STRESS)
         bp["boxes"][1].set_alpha(0.7)
 
         # Заголовок
@@ -1121,9 +1398,9 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
     plt.tight_layout()
     plt.subplots_adjust(top=0.9)
     plt.savefig(
-        "results/comprehensive_stress_comparison.png", dpi=300, bbox_inches="tight"
+        f"{RESULTS_DIR}/comprehensive_stress_comparison.png", dpi=FIGURE_DPI, bbox_inches="tight"
     )
-    plt.show()
+    show_plot_conditionally()
 
     # 2. ДИНАМИКА ПО ТРАЙЛАМ
     fig, axes = plt.subplots(2, 4, figsize=(20, 12))
@@ -1131,8 +1408,7 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
 
     measures_for_dynamics = list(dynamics.keys())[:8]
 
-    colors = ["#3498DB", "#5DADE2", "#85C1E9", "#E74C3C", "#F1948A", "#F8C471"]
-
+    # Используем динамическую функцию получения цветов фаз
     for i, measure in enumerate(measures_for_dynamics):
         ax = axes[i]
 
@@ -1143,22 +1419,13 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
         trials = list(range(1, 7))
         ax.plot(trials, values, "o-", linewidth=3, markersize=8, color="darkblue")
 
-        # Раскрашиваем точки по фазам
-        phase_colors = {
-            "baseline_1": "#3498DB",
-            "baseline_2": "#5DADE2",
-            "baseline_3": "#85C1E9",
-            "stress_peak": "#E74C3C",
-            "stress_adapt": "#F1948A",
-            "stress_recovery": "#F8C471",
-        }
-
+        # Раскрашиваем точки по фазам (используем динамическую функцию)
         for j, (trial, value, phase) in enumerate(zip(trials, values, phases)):
             ax.scatter(
                 trial,
                 value,
                 s=150,
-                c=phase_colors.get(phase, "gray"),
+                c=get_phase_color(phase),
                 edgecolor="black",
                 linewidth=2,
                 zorder=5,
@@ -1204,9 +1471,9 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
     plt.tight_layout()
     plt.subplots_adjust(top=0.9)
     plt.savefig(
-        "results/comprehensive_trial_dynamics.png", dpi=300, bbox_inches="tight"
+        f"{RESULTS_DIR}/comprehensive_trial_dynamics.png", dpi=FIGURE_DPI, bbox_inches="tight"
     )
-    plt.show()
+    show_plot_conditionally()
 
     # 3. СПЕЦИАЛЬНЫЙ ГРАФИК: КЛЮЧЕВЫЕ МАРКЕРЫ СТРЕССА
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -1265,8 +1532,8 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
     )
     plt.tight_layout()
     plt.subplots_adjust(top=0.85)
-    plt.savefig("results/key_stress_markers.png", dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.savefig(f"{RESULTS_DIR}/key_stress_markers.png", dpi=FIGURE_DPI, bbox_inches="tight")
+    show_plot_conditionally()
 
 
 def test_formal_hypotheses(word_comparison_results, trial_comparison_results):
@@ -1284,10 +1551,23 @@ def test_formal_hypotheses(word_comparison_results, trial_comparison_results):
 
     print(f"📊 РЕЗУЛЬТАТЫ СТАТИСТИЧЕСКОГО ТЕСТИРОВАНИЯ:")
     print(f"   • Общее количество проведенных тестов: {total_tests}")
-    print(f"   • Количество значимых результатов (p < 0.05): {total_significant}")
-    print(
-        f"   • Процент значимых результатов: {total_significant / total_tests * 100:.1f}%"
-    )
+    print(f"   • Количество значимых результатов (p < {ALPHA_LEVEL}): {total_significant}")
+    print(f"   • Процент значимых результатов: {total_significant / total_tests * 100:.1f}%")
+    
+    # КРИТИЧЕСКАЯ проверка общего размера выборки
+    all_sample_sizes = []
+    for result in trial_comparison_results:
+        if "no_stress_mean" in result:  # trial results
+            all_sample_sizes.append(TOTAL_TRIALS)  # Dynamic sample size for trials
+    for result in word_comparison_results:
+        if "mean_no_stress" in result:  # word results  
+            all_sample_sizes.append(548)  # Word level sample size (could be dynamic too)
+    
+    min_trial_sample = TOTAL_TRIALS  # Dynamic from loaded data
+    if min_trial_sample < MIN_SAMPLE_SIZE_WARNING:
+        print(f"\n🚨 КРИТИЧЕСКОЕ МЕТОДОЛОГИЧЕСКОЕ ОГРАНИЧЕНИЕ:")
+        print(f"   Размер выборки для трайлов (N={min_trial_sample}) КРИТИЧЕСКИ МАЛ!")
+        print(f"   При таком размере выборки НЕВОЗМОЖНО делать надежные выводы")
 
     print(f"\n⚖️ ПРОВЕРКА ГИПОТЕЗ ПО УРОВНЯМ АНАЛИЗА:")
 
@@ -1306,7 +1586,7 @@ def test_formal_hypotheses(word_comparison_results, trial_comparison_results):
         print(f"   🔸 ВЫВОД: H0 НЕ ОТКЛОНЯЕТСЯ (нет значимых различий)")
 
     # Анализ уровня трайлов
-    print(f"\n   📊 УРОВЕНЬ ТРАЙЛОВ (N = 6 трайлов):")
+    print(f"\n   📊 УРОВЕНЬ ТРАЙЛОВ (N = {TOTAL_TRIALS} трайлов):")
     print(f"   • Проведено тестов: {len(trial_comparison_results)}")
     print(f"   • Значимых результатов: {len(trial_significant)}")
 
@@ -1314,15 +1594,15 @@ def test_formal_hypotheses(word_comparison_results, trial_comparison_results):
         print(f"   🔹 ВЫВОД: H0 ОТКЛОНЯЕТСЯ по {len(trial_significant)} показателю(ям)")
         for result in trial_significant:
             print(
-                f"      ✅ {result['measure_name']}: p = {result['p_value']:.4f} < 0.05"
+                f"      ✅ {result['measure_name']}: p = {result['p_value']:.4f} < {ALPHA_LEVEL}"
             )
     else:
         print(f"   🔸 ВЫВОД: H0 НЕ ОТКЛОНЯЕТСЯ (нет значимых различий)")
-        print(f"   ⚠️  ПРИЧИНА: Малый размер выборки (N = 6)")
+        print(f"   ⚠️  ПРИЧИНА: Малый размер выборки (N = {TOTAL_TRIALS})")
 
         # Но анализируем размеры эффектов
         large_effects = [
-            r for r in trial_comparison_results if abs(r["cohens_d"]) >= 0.8
+            r for r in trial_comparison_results if abs(r["cohens_d"]) >= EFFECT_SIZE_LARGE
         ]
         print(
             f"   📈 ОДНАКО: Обнаружено {len(large_effects)} показателей с БОЛЬШИМИ размерами эффекта"
@@ -1337,20 +1617,31 @@ def test_formal_hypotheses(word_comparison_results, trial_comparison_results):
         print(f"   🎯 ЗАКЛЮЧЕНИЕ: Существуют статистически значимые различия")
         print(f"      в параметрах айтрекинга между условиями стресса")
     else:
-        print(f"   🔸 НУЛЕВАЯ ГИПОТЕЗА H0 НЕ ОТКЛОНЯЕТСЯ на уровне p < 0.05")
-        print(f"   ⚠️  ОДНАКО: Обнаружены БОЛЬШИЕ размеры эффектов")
-
-        # Подсчет больших эффектов
-        all_large_effects = [
-            r
-            for r in word_comparison_results + trial_comparison_results
-            if abs(r["cohens_d"]) >= 0.8
-        ]
-
-        print(
-            f"   📊 ПРАКТИЧЕСКАЯ ЗНАЧИМОСТЬ: {len(all_large_effects)} показателей с d > 0.8"
-        )
-        print(f"   🔬 РЕКОМЕНДАЦИЯ: Увеличить размер выборки для подтверждения")
+        print(f"   🔸 НУЛЕВАЯ ГИПОТЕЗА H0 НЕ ОТКЛОНЯЕТСЯ на уровне p < {ALPHA_LEVEL}")
+        
+        # КРИТИЧЕСКИ ВАЖНО: Честная интерпретация при малой выборке
+        min_sample = min(TOTAL_TRIALS, 548)  # Минимальная выборка среди анализов
+        if min_sample < MIN_SAMPLE_SIZE_WARNING:
+            print(f"\n   🚨 КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ ИССЛЕДОВАНИЯ:")
+            print(f"   • Размер выборки для трайлов (N={TOTAL_TRIALS}) НЕДОСТАТОЧЕН для выводов")
+            print(f"   • НЕВОЗМОЖНО утверждать наличие ИЛИ отсутствие эффекта")
+            print(f"   • Cohen's d при незначимых результатах и малой выборке НЕНАДЕЖЕН")
+            print(f"   • Требуется увеличение выборки до N ≥ {MIN_SAMPLE_SIZE_WARNING}")
+            
+            print(f"\n   📋 НАУЧНО ОБОСНОВАННОЕ ЗАКЛЮЧЕНИЕ:")
+            print(f"   • Данное исследование является ПИЛОТНЫМ")
+            print(f"   • Основной результат: отработка методологии")
+            print(f"   • НЕ предоставляет доказательств детекции стресса")
+            print(f"   • НЕ опровергает возможность детекции стресса")
+        else:
+            # Подсчет больших эффектов только при адекватной выборке
+            all_large_effects = [
+                r
+                for r in word_comparison_results + trial_comparison_results
+                if abs(r["cohens_d"]) >= EFFECT_SIZE_LARGE
+            ]
+            print(f"   📊 Показателей с большим размером эффекта: {len(all_large_effects)}")
+            print(f"   🔬 При адекватной выборке различий не обнаружено")
 
     # Рекомендации по дальнейшим исследованиям
     print(f"\n📋 РЕКОМЕНДАЦИИ ДЛЯ ДАЛЬНЕЙШИХ ИССЛЕДОВАНИЙ:")
@@ -1373,8 +1664,10 @@ def generate_comprehensive_report(
     """
     Создает итоговый отчет о возможности детекции стресса через айтрекинг
     """
-    print(f"\n🏆 ИТОГОВЫЙ ОТЧЕТ: ДЕТЕКЦИЯ СТРЕССА ЧЕРЕЗ АЙТРЕКИНГ")
+    print(f"\n🏆 ИТОГОВЫЙ ОТЧЕТ: ПИЛОТНОЕ ИССЛЕДОВАНИЕ АЙТРЕКИНГА И СТРЕССА")
     print("=" * 80)
+    print(f"⚠️ ВАЖНО: Данные результаты получены на критически малой выборке")
+    print(f"   и НЕ могут служить доказательством детекции стресса!")
 
     # Анализ результатов на уровне слов
     word_significant_results = [r for r in word_comparison_results if r["significant"]]
@@ -1486,34 +1779,56 @@ def generate_comprehensive_report(
     print(f"   • Показателей с пиком в трайле 4: {peak_patterns}/{len(dynamics)}")
     print(f"   • Показателей с восстановлением: {recovery_patterns}/{len(dynamics)}")
 
-    # КЛЮЧЕВЫЕ ВЫВОДЫ
-    print(f"\n🧠 КЛЮЧЕВЫЕ ВЫВОДЫ О ДЕТЕКЦИИ СТРЕССА:")
+    # ЧЕСТНЫЕ КЛЮЧЕВЫЕ ВЫВОДЫ
+    print(f"\n🧠 КЛЮЧЕВЫЕ ВЫВОДЫ ПИЛОТНОГО ИССЛЕДОВАНИЯ:")
 
     total_significant = len(all_significant)
     total_large_effects = len(all_large_effects)
-
-    if total_significant > 0 or total_large_effects > 5:
-        print("   ✅ СТРЕСС ДЕТЕКТИРУЕТСЯ через айтрекинг!")
-        print("   🎯 Лучшие маркеры для детекции:")
-
-        # Объединяем лучшие результаты
-        best_results = all_significant + all_large_effects
-        # Убираем дубликаты и сортируем по размеру эффекта
-        unique_results = {r["measure_name"]: r for r in best_results}.values()
-        sorted_results = sorted(
-            unique_results, key=lambda x: abs(x["cohens_d"]), reverse=True
-        )
-
-        for result in sorted_results[:5]:
-            level = "слова" if "change_direction" in result else "трайлы"
-            print(f"      • {result['measure_name']} (уровень: {level})")
-
+    
+    # Проверяем размер выборки для честного вывода
+    min_sample_size = TOTAL_TRIALS  # Размер выборки на уровне трайлов
+    
+    if min_sample_size < MIN_SAMPLE_SIZE_WARNING:
+        print(f"   🚨 КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ:")
+        print(f"   • Размер выборки (N={min_sample_size}) КРИТИЧЕСКИ МАЛ")
+        print(f"   • НЕВОЗМОЖНО сделать выводы о детекции стресса")
+        print(f"   • Данное исследование является ПИЛОТНЫМ")
+        
+        print(f"\n   📋 НАУЧНО ОБОСНОВАННЫЕ ВЫВОДЫ:")
+        if total_significant > 0:
+            print(f"   • Обнаружено {total_significant} значимых различий (требует подтверждения)")
+        else:
+            print(f"   • Значимых различий не обнаружено")
+            print(f"   • НО это НЕ означает отсутствие эффекта при малой выборке")
+        
+        print(f"\n   🔬 МЕТОДОЛОГИЧЕСКИЕ ПРОБЛЕМЫ:")
+        print(f"   • Высокий риск ошибок I и II типа")
+        print(f"   • Размеры эффектов ненадежны при p ≥ {ALPHA_LEVEL}")
+        print(f"   • Отсутствие поправок на множественные сравнения")
+        print(f"   • Необходимость репликации на большей выборке")
+        
     else:
-        print("   ⚠️  Статистически значимых различий мало")
-        print("   📊 Возможные причины:")
-        print("      • Малый размер выборки")
-        print("      • Высокая индивидуальная вариабельность")
-        print("      • Быстрая адаптация к стрессу")
+        # Этот блок выполнится только при достаточной выборке
+        if total_significant > 0 or total_large_effects > 5:
+            print("   ✅ НАЙДЕНЫ доказательства возможности детекции стресса")
+            print("   🎯 Перспективные маркеры:")
+            
+            # Объединяем лучшие результаты
+            best_results = all_significant + all_large_effects
+            unique_results = {r["measure_name"]: r for r in best_results}.values()
+            sorted_results = sorted(
+                unique_results, key=lambda x: abs(x["cohens_d"]), reverse=True
+            )
+            
+            for result in sorted_results[:5]:
+                level = "слова" if "change_direction" in result else "трайлы"
+                print(f"      • {result['measure_name']} (уровень: {level})")
+        else:
+            print("   📊 При достаточной выборке различий не обнаружено")
+            print("   🎯 Возможные причины:")
+            print("      • Айтрекинг не чувствителен к данному виду стресса")
+            print("      • Необходимы более контрастные условия")
+            print("      • Быстрая адаптация к стрессовым стимулам")
 
     print(f"\n🔍 НАИБОЛЕЕ ПЕРСПЕКТИВНЫЕ МАРКЕРЫ (по размеру эффекта):")
 
@@ -1538,37 +1853,71 @@ def generate_comprehensive_report(
 
     # ПРАКТИЧЕСКИЕ РЕКОМЕНДАЦИИ
     print(f"\n💡 ПРАКТИЧЕСКИЕ РЕКОМЕНДАЦИИ:")
-
-    if total_significant > 0 or total_large_effects > 3:
-        print("   ✅ АЙТРЕКИНГ МОЖЕТ ИСПОЛЬЗОВАТЬСЯ для детекции стресса")
-        print("   🎯 Рекомендуемые показатели:")
-        key_measures = (all_significant + all_large_effects)[:5]
-        for result in key_measures:
-            level = "слова" if "change_direction" in result else "трайлы"
-            print(f"      • {result['measure_name']} (уровень: {level})")
-        print("   📊 Необходимы:")
-        print("      • Больший размер выборки для подтверждения")
-        print("      • Индивидуальные базовые линии")
-        print("      • Мультимодальная валидация (физиология + айтрекинг)")
-        print("      • Комбинирование показателей разных уровней")
+    
+    # Проверяем размер выборки для честных рекомендаций
+    if min_sample_size < MIN_SAMPLE_SIZE_WARNING:
+        print("   🚨 НА ОСНОВЕ ДАННОГО ИССЛЕДОВАНИЯ:")
+        print("   • НЕЛЬЗЯ использовать айтрекинг для детекции стресса")
+        print("   • НЕЛЬЗЯ утверждать, что метод не работает")
+        print("   • Исследование носит ПИЛОТНЫЙ характер")
+        
+        print(f"\n   📋 НЕОБХОДИМЫЕ СЛЕДУЮЩИЕ ШАГИ:")
+        print(f"   1. КРИТИЧЕСКИ ВАЖНО: Увеличить выборку до N ≥ {MIN_SAMPLE_SIZE_WARNING}")
+        print(f"   2. Применить поправки на множественные сравнения")
+        print(f"   3. Провести power-анализ для расчета необходимого N")
+        print(f"   4. Использовать контрольные группы и рандомизацию")
+        print(f"   5. Валидировать на независимой выборке")
+        
+        print(f"\n   🔬 МЕТОДОЛОГИЧЕСКИЕ УЛУЧШЕНИЯ:")
+        print(f"   • Проверка предпосылок статистических тестов")
+        print(f"   • Использование смешанных моделей (mixed-effects)")
+        print(f"   • Байесовский анализ для малых выборок")
+        print(f"   • Индивидуальные базовые линии участников")
+        
+        if total_significant == 0:
+            print(f"\n   📊 ИНТЕРПРЕТАЦИЯ ОТСУТСТВИЯ ЗНАЧИМОСТИ:")
+            print(f"   • НЕ означает отсутствие эффекта")
+            print(f"   • НЕ означает наличие эффекта")  
+            print(f"   • Указывает на недостаточную мощность исследования")
+            print(f"   • Требует репликации с большей выборкой")
+            
     else:
-        print("   📊 ДЛЯ НАДЕЖНОЙ ДЕТЕКЦИИ СТРЕССА необходимо:")
-        print("      • Увеличить размер выборки (>10 участников)")
-        print("      • Использовать более контрастные стрессовые условия")
-        print("      • Добавить физиологические маркеры")
-        print("      • Применить машинное обучение для комбинации показателей")
+        # Этот блок выполнится только при достаточной выборке
+        if total_significant > 0 or total_large_effects > 3:
+            print("   ✅ АЙТРЕКИНГ показывает потенциал для детекции стресса")
+            print("   🎯 Перспективные показатели:")
+            key_measures = (all_significant + all_large_effects)[:5]
+            for result in key_measures:
+                level = "слова" if "change_direction" in result else "трайлы"
+                print(f"      • {result['measure_name']} (уровень: {level})")
+            print("   📊 Необходимы дополнительные исследования:")
+            print("      • Валидация на независимых данных")
+            print("      • Индивидуальные базовые линии")
+            print("      • Комбинирование с физиологическими маркерами")
+        else:
+            print("   📊 АЙТРЕКИНГ НЕ показал эффективность для данного вида стресса")
+            print("   🎯 Возможные направления:")
+            print("      • Тестирование других типов стрессовых стимулов")
+            print("      • Комбинирование с другими методами")
+            print("      • Фокус на индивидуальных различиях")
 
-    print(f"\n🚀 РЕЗЮМЕ:")
-    print(
-        f"   • Анализировано {len(word_comparison_results) + len(trial_comparison_results)} показателей айтрекинга"
-    )
-    print(
-        f"   • Обнаружено {total_large_effects} показателей с большими размерами эффекта"
-    )
-    print(f"   • {recovery_patterns} показателей демонстрируют адаптацию к стрессу")
-    print(
-        f"   • Айтрекинг показывает {'высокий' if total_large_effects > 5 else 'средний' if total_large_effects > 2 else 'низкий'} потенциал для детекции стресса"
-    )
+    print(f"\n🚀 ЧЕСТНОЕ РЕЗЮМЕ ПИЛОТНОГО ИССЛЕДОВАНИЯ:")
+    print(f"   • Анализировано {len(word_comparison_results) + len(trial_comparison_results)} показателей айтрекинга")
+    print(f"   • Статистически значимых результатов: {total_significant} из {len(word_comparison_results) + len(trial_comparison_results)}")
+    print(f"   • Размер выборки на уровне трайлов: N = {min_sample_size} (критически мал)")
+    print(f"   • Паттернов восстановления: {recovery_patterns} из {len(dynamics)}")
+    
+    if min_sample_size < MIN_SAMPLE_SIZE_WARNING:
+        print(f"   • 🚨 ОСНОВНОЙ ВЫВОД: Исследование ПИЛОТНОЕ, доказательств детекции стресса НЕТ")
+        print(f"   • 📋 СТАТУС: Методология отработана, требуется увеличение выборки")
+        print(f"   • 🎯 ПОТЕНЦИАЛ: Невозможно оценить без адекватного размера выборки")
+    else:
+        potential = 'высокий' if total_large_effects > 5 else 'средний' if total_large_effects > 2 else 'низкий'
+        print(f"   • 🎯 ПОТЕНЦИАЛ для детекции стресса: {potential}")
+        if total_significant > 0:
+            print(f"   • ✅ НАЙДЕНЫ статистически значимые различия")
+        else:
+            print(f"   • ❌ Статистически значимых различий не обнаружено")
 
 
 def print_research_hypotheses():
@@ -1582,7 +1931,7 @@ def print_research_hypotheses():
 
     print("\n🔸 НУЛЕВАЯ ГИПОТЕЗА (H0):")
     print("   Отсутствуют статистически значимые различия в параметрах айтрекинга")
-    print("   между условиями БЕЗ СТРЕССА (трайлы 1-3) и СО СТРЕССОМ (трайлы 4-6)")
+    print("   между условиями БЕЗ СТРЕССА (трайлы 1-{}) и СО СТРЕССОМ (трайлы {}-{})".format(STRESS_THRESHOLD, STRESS_THRESHOLD+1, MAX_TRIAL_NUMBER))
     print("   H0: μ₁ = μ₂ (средние значения равны)")
 
     print("\n🔹 АЛЬТЕРНАТИВНАЯ ГИПОТЕЗА (H1):")
@@ -1591,9 +1940,9 @@ def print_research_hypotheses():
     print("   H1: μ₁ ≠ μ₂ (средние значения различаются)")
 
     print("\n⚖️ КРИТЕРИИ ПРИНЯТИЯ РЕШЕНИЯ:")
-    print("   • Уровень значимости: α = 0.05")
-    print("   • Если p-value < 0.05 → ОТКЛОНЯЕМ H0, ПРИНИМАЕМ H1")
-    print("   • Если p-value ≥ 0.05 → НЕ ОТКЛОНЯЕМ H0")
+    print(f"   • Уровень значимости: α = {ALPHA_LEVEL}")
+    print(f"   • Если p-value < {ALPHA_LEVEL} → ОТКЛОНЯЕМ H0, ПРИНИМАЕМ H1")
+    print(f"   • Если p-value ≥ {ALPHA_LEVEL} → НЕ ОТКЛОНЯЕМ H0")
 
     print("\n🧪 СТАТИСТИЧЕСКИЕ МЕТОДЫ:")
     print("   • Критерий Манна-Уитни (непараметрический)")
@@ -1609,9 +1958,31 @@ def main():
     """
     Главная функция - комплексный анализ данных айтрекинга
     """
+    # Парсим аргументы командной строки
+    args = parse_arguments()
+    
+    # Устанавливаем глобальные переменные из аргументов
+    global WORD_DATA_FILE, TRIAL_DATA_FILE, RESULTS_DIR, SHOW_PLOTS
+    WORD_DATA_FILE = args.word_file
+    TRIAL_DATA_FILE = args.trial_file
+    RESULTS_DIR = args.results_dir
+    
+    # Определяем флаг показа графиков
+    if args.show_plots:
+        SHOW_PLOTS = True
+    else:
+        # По умолчанию не показывать графики
+        SHOW_PLOTS = False
+    
     print("🚀 КОМПЛЕКСНЫЙ АНАЛИЗ ДАННЫХ АЙТРЕКИНГА")
     print("🎯 Цель: Доказать возможность детекции стресса через движения глаз")
     print("📊 Анализ на двух уровнях: отдельные слова + целые трайлы")
+    print(f"📁 Данные слов: {WORD_DATA_FILE}")
+    print(f"📁 Данные трайлов: {TRIAL_DATA_FILE}")
+    print(f"📊 Папка результатов: {RESULTS_DIR}")
+    print(f"📺 Показ графиков: {'Да' if SHOW_PLOTS else 'Нет (только сохранение)'}")
+    if not SHOW_STATISTICAL_WARNINGS:
+        print("🔇 Режим: Warnings подавлены")
     print("=" * 80)
 
     # Формулировка научных гипотез
@@ -1672,42 +2043,49 @@ def main():
         )
 
         print(f"\n🎉 КОМПЛЕКСНЫЙ АНАЛИЗ ЗАВЕРШЕН!")
-        print(f"📊 Создано 6 наборов графиков в папке 'results/':")
-        print(
-            f"   • results/word_level_stress_analysis.png - сравнение условий (слова)"
-        )
-        print(f"   • results/trial_level_dynamics.png - динамика по трайлам")
-        print(f"   • results/word_level_dynamics.png - динамика по словам")
-        print(f"   • results/comprehensive_stress_comparison.png - сравнение условий")
-        print(f"   • results/comprehensive_trial_dynamics.png - динамика по трайлам")
-        print(f"   • results/key_stress_markers.png - ключевые маркеры стресса")
+        print(f"📊 Создано 6 наборов графиков в папке '{RESULTS_DIR}/':")
+        print(f"   • {RESULTS_DIR}/word_level_stress_analysis.png - сравнение условий (слова)")
+        print(f"   • {RESULTS_DIR}/trial_level_dynamics.png - динамика по трайлам") 
+        print(f"   • {RESULTS_DIR}/word_level_dynamics.png - динамика по словам")
+        print(f"   • {RESULTS_DIR}/comprehensive_stress_comparison.png - сравнение условий")
+        print(f"   • {RESULTS_DIR}/comprehensive_trial_dynamics.png - динамика по трайлам")
+        print(f"   • {RESULTS_DIR}/key_stress_markers.png - ключевые маркеры стресса")
 
         # Результаты тестирования гипотез
         print(f"\n🔬 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ ГИПОТЕЗ:")
         print(f"   • Всего проведено тестов: {total_tests}")
         print(f"   • Статистически значимых результатов: {total_significant}")
+        
+        # Проверяем размер выборки для честных выводов  
+        trial_sample_size = TOTAL_TRIALS  # Размер выборки на уровне трайлов
+        validate_sample_size(trial_sample_size, "итоговые выводы")
 
         if total_significant > 0:
-            print(f"   ✅ ЗАКЛЮЧЕНИЕ: H0 частично отклоняется → H1 подтверждается")
-            print(f"   🎯 АЙТРЕКИНГ МОЖЕТ ДЕТЕКТИРОВАТЬ СТРЕСС!")
-        else:
-            large_effects = len(
-                [
-                    r
-                    for r in word_comparison_results + trial_comparison_results
-                    if abs(r["cohens_d"]) >= 0.8
-                ]
-            )
-            if large_effects > 5:
-                print(
-                    f"   🔸 ЗАКЛЮЧЕНИЕ: H0 не отклоняется, НО обнаружены большие эффекты"
-                )
-                print(
-                    f"   📊 ПОТЕНЦИАЛ ДЛЯ ДЕТЕКЦИИ СТРЕССА ВЫСОКИЙ (при увеличении выборки)"
-                )
+            print(f"   🔸 H0 ЧАСТИЧНО ОТКЛОНЯЕТСЯ → H1 частично подтверждается")
+            if trial_sample_size < MIN_SAMPLE_SIZE_WARNING:
+                print(f"   ⚠️ ОДНАКО: Критически малая выборка (N={trial_sample_size})")
+                print(f"   🚨 ЗАКЛЮЧЕНИЕ: Результаты требуют подтверждения на большей выборке")
+                print(f"   📋 СТАТУС: ПИЛОТНОЕ исследование, НЕ доказательство детекции стресса")
             else:
-                print(f"   🔸 ЗАКЛЮЧЕНИЕ: H0 не отклоняется")
-                print(f"   📊 ПОТЕНЦИАЛ ДЛЯ ДЕТЕКЦИИ СТРЕССА СРЕДНИЙ")
+                print(f"   ✅ ЗАКЛЮЧЕНИЕ: Найдены доказательства различий в айтрекинге при стрессе")
+        else:
+            print(f"   🔸 H0 НЕ ОТКЛОНЯЕТСЯ на уровне p < {ALPHA_LEVEL}")
+            
+            if trial_sample_size < MIN_SAMPLE_SIZE_WARNING:
+                print(f"   🚨 КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ: Размер выборки N={trial_sample_size} недостаточен")
+                print(f"   📋 ЧЕСТНОЕ ЗАКЛЮЧЕНИЕ:")
+                print(f"   • НЕВОЗМОЖНО утверждать, что айтрекинг НЕ может детектировать стресс")
+                print(f"   • НЕВОЗМОЖНО утверждать, что айтрекинг МОЖЕТ детектировать стресс")
+                print(f"   • Исследование является ПИЛОТНЫМ")
+                print(f"   • Основной результат: отработка методологии")
+                print(f"   • Требуется увеличение выборки до N ≥ {MIN_SAMPLE_SIZE_WARNING}")
+            else:
+                large_effects = len([r for r in word_comparison_results + trial_comparison_results if abs(r["cohens_d"]) >= EFFECT_SIZE_LARGE])
+                if large_effects > 5:
+                    print(f"   📊 Обнаружено {large_effects} показателей с большим размером эффекта")
+                    print(f"   🔬 ЗАКЛЮЧЕНИЕ: Потенциал есть, но статистически не подтвержден")
+                else:
+                    print(f"   📊 ЗАКЛЮЧЕНИЕ: При адекватной выборке различий не обнаружено")
 
     except Exception as e:
         print(f"❌ ОШИБКА: {e}")

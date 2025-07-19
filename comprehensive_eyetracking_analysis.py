@@ -25,14 +25,14 @@ def parse_arguments():
     parser.add_argument(
         "--word-file",
         type=str,
-        default="ia_avg.xls",
+        default="data/ia_avg.xls",
         help="Путь к файлу с данными на уровне слов",
     )
 
     parser.add_argument(
         "--trial-file",
         type=str,
-        default="events.xls",
+        default="data/events.xls",
         help="Путь к файлу с данными на уровне трайлов",
     )
 

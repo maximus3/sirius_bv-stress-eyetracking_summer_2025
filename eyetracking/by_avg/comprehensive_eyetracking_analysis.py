@@ -25,21 +25,21 @@ def parse_arguments():
     parser.add_argument(
         "--word-file",
         type=str,
-        default="eyetracking/by_avg/data/ia_avg.xls",
+        default="eyetracking/by_avg/data/ia_avg_cleared.xls",
         help="Путь к файлу с данными на уровне слов",
     )
 
     parser.add_argument(
         "--trial-file",
         type=str,
-        default="eyetracking/by_avg/data/events_avg.xls",
+        default="eyetracking/by_avg/data/events_avg_cleared.xls",
         help="Путь к файлу с данными на уровне трайлов",
     )
 
     parser.add_argument(
         "--results-dir",
         type=str,
-        default="eyetracking/by_avg/results",
+        default="eyetracking/by_avg/results_cleared",
         help="Путь к папке для сохранения результатов",
     )
 
@@ -85,6 +85,36 @@ COLORS_STRESS = "#E74C3C"  # Красный
 
 # Настройки для предупреждений
 SHOW_STATISTICAL_WARNINGS = False
+
+# Словарь с единицами измерения для графиков
+UNITS = {
+    # Word level
+    "IA_FIRST_FIXATION_DURATION": "мс",
+    "IA_FIXATION_COUNT": "шт.",
+    "IA_DWELL_TIME": "мс",
+    "IA_DWELL_TIME_%": "%",
+    "IA_VISITED_TRIAL_%": "%",
+    "IA_REVISIT_TRIAL_%": "%",
+    "IA_RUN_COUNT": "шт.",
+    # Trial level
+    "blinks": "шт.",
+    "fixations": "шт.",
+    "fixation_duration_mean": "мс",
+    "fixation_duration_median": "мс",
+    "pupil_size": "у.е.",  # условные единицы
+    "runs": "шт.",
+    "saccade_amplitude_mean": "°",
+    "saccades": "шт.",
+    "trial_duration": "мс",
+    "visited_areas": "%",
+    "regressive_runs": "шт.",
+    "duration_per_word": "мс/слово",
+    # Относительные метрики
+    "fixations_per_sec": "шт/с",
+    "saccades_per_sec": "шт/с",
+    "runs_per_sec": "шт/с",
+    "regressive_runs_per_sec": "шт/с",
+}
 
 # =============================================================================
 
@@ -312,7 +342,7 @@ def load_comprehensive_data():
         "IA_DWELL_TIME_%": "Процент времени пребывания (%)",
         "IA_VISITED_TRIAL_%": "Процент визитов к слову (%)",
         "IA_REVISIT_TRIAL_%": "Процент повторных визитов (%)",
-        "IA_RUN_COUNT": "Количество забеганий взгляда",
+        "IA_RUN_COUNT": "Количество серий фиксаций",
     }
 
     # Находим числовые колонки для слов
@@ -416,6 +446,17 @@ def load_comprehensive_data():
 
     # Заменяем абсолютное количество на долю в процентах
     trial_data["visited_areas"] = visited_areas_percent
+
+    # Рассчитываем и добавляем количество повторных серий ПОСЛЕ переименования
+    trial_data["regressive_runs"] = (
+        trial_data["runs"] - trial_data["visited_areas_absolute"]
+    )
+    # Рассчитываем длительность на одно слово (зону интереса)
+    # Убедимся, что interest_areas_total не равен нулю, чтобы избежать деления на ноль
+    trial_data["duration_per_word"] = (
+        trial_data["trial_duration"]
+        / trial_data["interest_areas_total"].replace(0, np.nan)
+    ).fillna(0)
 
     print(f"✅ Загружено {len(trial_data)} трайлов")
     print(
@@ -586,8 +627,9 @@ def analyze_trial_level_differences(trial_data):
         "runs",
         "saccade_amplitude_mean",
         "saccades",
-        "trial_duration",
+        "duration_per_word",
         "visited_areas",
+        "regressive_runs",
     ]
 
     # Русские названия
@@ -597,11 +639,12 @@ def analyze_trial_level_differences(trial_data):
         "fixation_duration_mean": "Средняя длительность фиксаций (мс)",
         "fixation_duration_median": "Медианная длительность фиксаций (мс)",
         "pupil_size": "Размер зрачка (средний)",
-        "runs": "Количество забеганий взгляда",
+        "runs": "Количество серий фиксаций",
         "saccade_amplitude_mean": "Средняя амплитуда саккад (°)",
         "saccades": "Общее количество саккад",
-        "trial_duration": "Длительность трайла (мс)",
+        "duration_per_word": "Средняя длительность на слово (мс)",
         "visited_areas": "Количество посещенных зон",
+        "regressive_runs": "Количество повторных серий фиксаций",
     }
 
     results = []
@@ -748,6 +791,8 @@ def analyze_trial_dynamics(trial_data):
         "saccade_amplitude_mean",
         "saccades",
         "visited_areas",
+        "duration_per_word",
+        "regressive_runs",
     ]
 
     measure_names = {
@@ -755,10 +800,12 @@ def analyze_trial_dynamics(trial_data):
         "fixations": "Общее количество фиксаций",
         "fixation_duration_mean": "Средняя длительность фиксаций (мс)",
         "pupil_size": "Размер зрачка",
-        "runs": "Количество забеганий",
+        "runs": "Серии фиксаций",
         "saccade_amplitude_mean": "Амплитуда саккад (°)",
-        "saccades": "Количество саккад",
+        "saccades": "Общее количество саккад",
         "visited_areas": "Покрытие текста (%)",
+        "duration_per_word": "Длительность на слово (мс)",
+        "regressive_runs": "Повторные серии фиксаций",
     }
 
     dynamics = {}
@@ -820,7 +867,7 @@ def analyze_trial_dynamics(trial_data):
             else:
                 pattern = f"🔥 ПИК в Т{expected_peak_trial} → БЕЗ ВОССТАНОВЛЕНИЯ"
         else:
-            pattern = "❓ НЕСТАНДАРТНЫЙ ПАТТЕРН"
+            pattern = ""
 
         print(f"   🎯 Паттерн: {pattern}")
         print(f"   📊 Базовая линия: {baseline:.2f}")
@@ -835,6 +882,93 @@ def analyze_trial_dynamics(trial_data):
             "baseline": baseline,
             "pattern": pattern,
         }
+
+    # Специально вычисляем динамику для trial_duration для последующих расчетов,
+    # не добавляя ее в основной список анализа, чтобы избежать дублирования с
+    # более информативным показателем "длительность на слово".
+    if "trial_duration" not in dynamics:
+        trial_duration_values = []
+        trial_duration_phases = []
+        for trial in range(1, MAX_TRIAL_NUMBER + 1):
+            val = trial_data[trial_data["trial"] == trial]["trial_duration"].iloc[0]
+            phase = trial_data[trial_data["trial"] == trial]["phase"].iloc[0]
+            trial_duration_values.append(val)
+            trial_duration_phases.append(phase)
+        
+        # Рассчитываем и добавляем паттерн для trial_duration
+        if len(trial_duration_values) > STRESS_THRESHOLD:
+            baseline = np.mean(trial_duration_values[:STRESS_THRESHOLD])
+            changes = [
+                (v - baseline) / baseline * 100 if baseline != 0 else 0
+                for v in trial_duration_values
+            ]
+            peak_trial = np.argmax(np.abs(changes)) + 1
+            expected_peak_trial = STRESS_THRESHOLD + 1
+
+            if peak_trial == expected_peak_trial:
+                if len(changes) > expected_peak_trial and abs(changes[-1]) < abs(
+                    changes[expected_peak_trial - 1]
+                ):
+                    pattern = f"🎯 ПИК в Т{expected_peak_trial} → ВОССТАНОВЛЕНИЕ"
+                else:
+                    pattern = f"🔥 ПИК в Т{expected_peak_trial} → БЕЗ ВОССТАНОВЛЕНИЯ"
+            else:
+                pattern = ""
+        else:
+            pattern = ""
+            changes = []
+            baseline = 0
+
+        dynamics["trial_duration"] = {
+            "values": trial_duration_values,
+            "phases": trial_duration_phases,
+            "pattern": pattern,
+            "changes": changes,
+            "baseline": baseline,
+        }
+
+    # Рассчитываем относительные показатели (частоту в секунду)
+    if "trial_duration" in dynamics:
+        trial_duration_values = dynamics["trial_duration"]["values"]
+        # Преобразуем мс в секунды, избегая деления на ноль
+        trial_durations_s = [d / 1000 if d > 0 else 1 for d in trial_duration_values]
+
+        for rel_measure in ["fixations", "saccades", "runs", "regressive_runs"]:
+            if rel_measure in dynamics:
+                values = dynamics[rel_measure]["values"]
+                relative_values = [v / d for v, d in zip(values, trial_durations_s)]
+
+                # Пересчитываем динамику для относительных значений
+                if len(relative_values) > STRESS_THRESHOLD:
+                    baseline = np.mean(relative_values[:STRESS_THRESHOLD])
+                    changes = [
+                        (v - baseline) / baseline * 100 if baseline != 0 else 0
+                        for v in relative_values
+                    ]
+                    peak_trial = np.argmax(np.abs(changes)) + 1
+                    expected_peak_trial = STRESS_THRESHOLD + 1
+
+                    if peak_trial == expected_peak_trial:
+                        if len(changes) > expected_peak_trial and abs(
+                            changes[-1]
+                        ) < abs(changes[expected_peak_trial - 1]):
+                            pattern = f"🎯 ПИК в Т{expected_peak_trial} → ВОССТАНОВЛЕНИЕ"
+                        else:
+                            pattern = (
+                                f"🔥 ПИК в Т{expected_peak_trial} → БЕЗ ВОССТАНОВЛЕНИЯ"
+                            )
+                    else:
+                        pattern = ""
+                else:
+                    pattern = ""
+
+                dynamics[f"{rel_measure}_per_sec"] = {
+                    "values": relative_values,
+                    "phases": dynamics[rel_measure]["phases"],
+                    "changes": changes,
+                    "baseline": baseline,
+                    "pattern": pattern,
+                }
 
     return dynamics, trial_stats
 
@@ -1073,7 +1207,8 @@ def create_enhanced_word_visualizations(
         )
 
         ax.grid(True, alpha=0.3)
-        ax.set_ylabel("Значение")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
 
     # Удаляем лишние подграфики
     for i in range(len(word_test_results), len(axes)):
@@ -1173,10 +1308,11 @@ def create_dynamics_visualizations(
             "fixations": "Фиксации",
             "fixation_duration_mean": "Длит. фиксаций",
             "pupil_size": "Размер зрачка",
-            "runs": "Забегания",
+            "runs": "Серии фиксаций",
             "saccade_amplitude_mean": "Амплитуда саккад",
             "saccades": "Саккады",
             "visited_areas": "Посещ. зоны",
+            "duration_per_word": "Длит. на слово",
         }
         ax.set_title(
             f"{trial_measure_names.get(measure, measure)}",
@@ -1202,7 +1338,8 @@ def create_dynamics_visualizations(
 
         # Настройка осей
         ax.set_xlabel("Номер трайла")
-        ax.set_ylabel("Значение")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
         ax.set_xticks(trials)
         ax.grid(True, alpha=0.3)
 
@@ -1334,7 +1471,8 @@ def create_dynamics_visualizations(
 
         # Настройка осей
         ax.set_xlabel("Номер трайла")
-        ax.set_ylabel("Значение")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
         ax.set_xticks(trials)
         ax.grid(True, alpha=0.3)
 
@@ -1484,14 +1622,14 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
 
         # Вертикальная линия разделяющая фазы
         ax.axvline(x=3.5, color="red", linestyle="--", alpha=0.7, linewidth=2)
-        ax.text(
-            3.5,
-            max(values) * 0.9,
-            "НАЧАЛО\nСТРЕССА",
-            ha="center",
-            va="center",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="red", alpha=0.3),
-        )
+        # ax.text(
+        #     35,
+        #     max(values) * 0.9,
+        #     "НАЧАЛО\nСТРЕССА",
+        #     ha="center",
+        #     va="center",
+        #     bbox=dict(boxstyle="round,pad=0.3", facecolor="red", alpha=0.3),
+        # )
 
         # Заголовок с паттерном
         measure_name = {
@@ -1499,10 +1637,12 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
             "fixations": "Фиксации",
             "fixation_duration_mean": "Длит. фиксаций",
             "pupil_size": "Размер зрачка",
-            "runs": "Забегания",
+            "runs": "Серии фиксаций",
             "saccade_amplitude_mean": "Амплитуда саккад",
             "saccades": "Саккады",
             "visited_areas": "Посещ. зоны",
+            "duration_per_word": "Длит. на слово",
+            "regressive_runs": "Повторные серии",
         }.get(measure, measure)
 
         ax.set_title(
@@ -1512,7 +1652,8 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
         )
 
         ax.set_xlabel("Номер трайла")
-        ax.set_ylabel("Значение")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
         ax.set_xticks(trials)
         ax.grid(True, alpha=0.3)
 
@@ -1573,6 +1714,8 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
         ax.set_title(name, fontweight="bold")
         ax.set_xticks([1, 2])
         ax.set_xticklabels(["Без стресса", "Со стрессом"])
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
         ax.grid(True, alpha=0.3)
 
         if i == 0:
@@ -1587,6 +1730,198 @@ def create_comprehensive_visualizations(trial_data, comparison_results, dynamics
     plt.subplots_adjust(top=0.85)
     plt.savefig(
         f"{RESULTS_DIR}/key_stress_markers.png", dpi=FIGURE_DPI, bbox_inches="tight"
+    )
+    show_plot_conditionally()
+
+
+def create_key_dynamics_visualization(dynamics):
+    """
+    Создает график с динамикой ключевых показателей по трайлам.
+    """
+    print(f"\n🎨 СОЗДАНИЕ ГРАФИКА ДИНАМИКИ КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ")
+    print("=" * 50)
+
+    fig, axes = plt.subplots(2, 3, figsize=(24, 12))
+    axes = axes.flatten()
+
+    measures_for_dynamics = [
+        "fixations_per_sec",
+        "fixation_duration_mean",
+        "pupil_size",
+        "saccades_per_sec",
+        "duration_per_word",
+        "regressive_runs_per_sec",
+    ]
+
+    measure_names_map = {
+        "fixations_per_sec": "Частота фиксаций (шт/с)",
+        "fixation_duration_mean": "Длительность фиксаций",
+        "pupil_size": "Размер зрачка",
+        "saccades_per_sec": "Частота саккад (шт/с)",
+        "duration_per_word": "Длительность на слово",
+        "regressive_runs_per_sec": "Частота повторных серий (шт/с)",
+    }
+
+    # Используем динамическую функцию получения цветов фаз
+    for i, measure in enumerate(measures_for_dynamics):
+        ax = axes[i]
+
+        if measure not in dynamics:
+            ax.text(0.5, 0.5, "Нет данных", ha="center", va="center")
+            ax.set_title(
+                measure_names_map.get(measure, measure),
+                fontweight="bold",
+                fontsize=12,
+            )
+            continue
+
+        values = dynamics[measure]["values"]
+        phases = dynamics[measure]["phases"]
+
+        # Создаем линейный график
+        trials = list(range(1, len(values) + 1))
+        ax.plot(trials, values, "o-", linewidth=3, markersize=8, color="darkblue")
+
+        # Раскрашиваем точки по фазам (используем динамическую функцию)
+        for j, (trial, value, phase) in enumerate(zip(trials, values, phases)):
+            ax.scatter(
+                trial,
+                value,
+                s=150,
+                c=get_phase_color(phase),
+                edgecolor="black",
+                linewidth=2,
+                zorder=5,
+            )
+
+        # Вертикальная линия разделяющая фазы
+        ax.axvline(
+            x=STRESS_THRESHOLD + 0.5, color="red", linestyle="--", alpha=0.7, linewidth=2
+        )
+
+        # Заголовок с паттерном
+        measure_name = measure_names_map.get(measure, measure)
+
+        ax.set_title(
+            f"{measure_name}\n{dynamics[measure]['pattern']}",
+            fontweight="bold",
+            fontsize=12,
+        )
+
+        ax.set_xlabel("Номер трайла")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
+        ax.set_xticks(trials)
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle(
+        "📊 ДИНАМИКА КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ АЙТРЕКИНГА ПО ТРАЙЛАМ",
+        fontsize=16,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)
+    plt.savefig(
+        f"{RESULTS_DIR}/key_trial_dynamics.png",
+        dpi=FIGURE_DPI,
+        bbox_inches="tight",
+    )
+    show_plot_conditionally()
+
+
+def create_key_dynamics_absolute_visualization(dynamics):
+    """
+    Создает график с динамикой ключевых показателей (абсолютные значения) по трайлам.
+    """
+    print(
+        f"\n🎨 СОЗДАНИЕ ГРАФИКА ДИНАМИКИ КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ (АБСОЛЮТНЫЕ ЗНАЧЕНИЯ)"
+    )
+    print("=" * 50)
+
+    fig, axes = plt.subplots(2, 3, figsize=(24, 12))
+    axes = axes.flatten()
+
+    measures_for_dynamics = [
+        "fixations",
+        "fixation_duration_mean",
+        "pupil_size",
+        "saccades",
+        "duration_per_word",
+        "regressive_runs",
+    ]
+
+    measure_names_map = {
+        "fixations": "Количество фиксаций",
+        "fixation_duration_mean": "Длительность фиксаций",
+        "pupil_size": "Размер зрачка",
+        "saccades": "Количество саккад",
+        "duration_per_word": "Длительность на слово",
+        "regressive_runs": "Количество повторных серий",
+    }
+
+    # Используем динамическую функцию получения цветов фаз
+    for i, measure in enumerate(measures_for_dynamics):
+        ax = axes[i]
+
+        if measure not in dynamics:
+            ax.text(0.5, 0.5, "Нет данных", ha="center", va="center")
+            ax.set_title(
+                measure_names_map.get(measure, measure),
+                fontweight="bold",
+                fontsize=12,
+            )
+            continue
+
+        values = dynamics[measure]["values"]
+        phases = dynamics[measure]["phases"]
+
+        # Создаем линейный график
+        trials = list(range(1, len(values) + 1))
+        ax.plot(trials, values, "o-", linewidth=3, markersize=8, color="darkblue")
+
+        # Раскрашиваем точки по фазам (используем динамическую функцию)
+        for j, (trial, value, phase) in enumerate(zip(trials, values, phases)):
+            ax.scatter(
+                trial,
+                value,
+                s=150,
+                c=get_phase_color(phase),
+                edgecolor="black",
+                linewidth=2,
+                zorder=5,
+            )
+
+        # Вертикальная линия разделяющая фазы
+        ax.axvline(
+            x=STRESS_THRESHOLD + 0.5, color="red", linestyle="--", alpha=0.7, linewidth=2
+        )
+
+        # Заголовок с паттерном
+        measure_name = measure_names_map.get(measure, measure)
+
+        ax.set_title(
+            f"{measure_name}\n{dynamics[measure]['pattern']}",
+            fontweight="bold",
+            fontsize=12,
+        )
+
+        ax.set_xlabel("Номер трайла")
+        unit = UNITS.get(measure, "")
+        ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
+        ax.set_xticks(trials)
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle(
+        "📊 ДИНАМИКА КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ (АБСОЛЮТНЫЕ ЗНАЧЕНИЯ)",
+        fontsize=16,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.92)
+    plt.savefig(
+        f"{RESULTS_DIR}/key_trial_dynamics_absolute.png",
+        dpi=FIGURE_DPI,
+        bbox_inches="tight",
     )
     show_plot_conditionally()
 
@@ -2123,6 +2458,12 @@ def main():
             trial_data, trial_comparison_results, dynamics
         )
 
+        # 6d. График динамики ключевых показателей
+        create_key_dynamics_visualization(dynamics)
+
+        # 6e. График динамики ключевых показателей (абсолютные значения)
+        create_key_dynamics_absolute_visualization(dynamics)
+
         # 7. Формальное тестирование гипотез
         total_significant, total_tests = test_formal_hypotheses(
             word_comparison_results, trial_comparison_results
@@ -2134,7 +2475,7 @@ def main():
         )
 
         print(f"\n🎉 КОМПЛЕКСНЫЙ АНАЛИЗ ЗАВЕРШЕН!")
-        print(f"📊 Создано 6 наборов графиков в папке '{RESULTS_DIR}/':")
+        print(f"📊 Создано 8 наборов графиков в папке '{RESULTS_DIR}/':")
         print(
             f"   • {RESULTS_DIR}/word_level_stress_analysis.png - сравнение условий (слова)"
         )
@@ -2147,6 +2488,12 @@ def main():
             f"   • {RESULTS_DIR}/comprehensive_trial_dynamics.png - динамика по трайлам"
         )
         print(f"   • {RESULTS_DIR}/key_stress_markers.png - ключевые маркеры стресса")
+        print(
+            f"   • {RESULTS_DIR}/key_trial_dynamics.png - динамика ключевых показателей"
+        )
+        print(
+            f"   • {RESULTS_DIR}/key_trial_dynamics_absolute.png - динамика ключевых показателей (абсолютные)"
+        )
 
         # Результаты тестирования гипотез
         print(f"\n🔬 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ ГИПОТЕЗ:")

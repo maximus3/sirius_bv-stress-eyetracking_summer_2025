@@ -25,21 +25,21 @@ def parse_arguments():
     parser.add_argument(
         "--word-file",
         type=str,
-        default="data/ia_avg.xls",
+        default="eyetracking/by_avg/data/ia_avg.xls",
         help="Путь к файлу с данными на уровне слов",
     )
 
     parser.add_argument(
         "--trial-file",
         type=str,
-        default="data/events_avg.xls",
+        default="eyetracking/by_avg/data/events_avg.xls",
         help="Путь к файлу с данными на уровне трайлов",
     )
 
     parser.add_argument(
         "--results-dir",
         type=str,
-        default="results",
+        default="eyetracking/by_avg/results",
         help="Путь к папке для сохранения результатов",
     )
 

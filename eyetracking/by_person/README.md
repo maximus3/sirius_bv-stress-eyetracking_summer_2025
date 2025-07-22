@@ -1,3 +1,9 @@
+# Запуск
+
+```
+uv run eyetracking/by_person/person_level_analysis.py --exclude-participants 1707KAV 1807HEE 1807CAA 1607LVA 1907ZSI 1707DMA 1707SAA 1807SAV --show-plots
+```
+
 # Описание файла trial.xls
 
 Файл `trial.xls` содержит данные айтрекинга (отслеживания движений глаз) для различных участников эксперимента. Каждая строка представляет собой отдельный трайл (попытку) для конкретного участника.

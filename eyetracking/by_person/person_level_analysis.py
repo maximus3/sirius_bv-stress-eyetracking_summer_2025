@@ -101,23 +101,23 @@ UNITS = {
     
     # Нормализованные метрики (на слово)
     "DURATION_PER_WORD": "мс/слово",
-    "FIXATIONS_PER_WORD": "шт/слово",
-    "SACCADES_PER_WORD": "шт/слово",
-    "BLINKS_PER_WORD": "шт/слово",
+    "FIXATIONS_PER_WORD": "ед/слово",
+    "SACCADES_PER_WORD": "ед/слово",
+    "BLINKS_PER_WORD": "ед/слово",
     
     # Нормализованные метрики (в секунду)
-    "FIXATIONS_PER_SECOND": "шт/с",
-    "SACCADES_PER_SECOND": "шт/с",
-    "BLINKS_PER_SECOND": "шт/с",
+    "FIXATIONS_PER_SECOND": "ед/с",
+    "SACCADES_PER_SECOND": "ед/с",
+    "BLINKS_PER_SECOND": "ед/с",
     
     # Покрытие текста
     "TEXT_COVERAGE_PERCENT": "%",
     "REVISITED_WORDS_PERCENT": "%",
     
     # Возвратные саккады
-    "REGRESSIVE_SACCADES": "шт.",
-    "REGRESSIVE_SACCADES_PER_WORD": "шт/слово",
-    "REGRESSIVE_SACCADES_PER_SECOND": "шт/с",
+    "REGRESSIVE_SACCADES": "ед.",
+    "REGRESSIVE_SACCADES_PER_WORD": "ед/слово",
+    "REGRESSIVE_SACCADES_PER_SECOND": "ед/с",
     "REGRESSIVE_SACCADES_PERCENT": "%",
 }
 
@@ -731,32 +731,38 @@ def create_enhanced_trial_dynamics_visualization(data, key_measures):
 
 def create_key_dynamics_visualization(data):
     """
-    Создает график с динамикой ключевых показателей по трайлам (аналогично comprehensive_eyetracking_analysis.py).
+    Создает 3 отдельных графика с динамикой ключевых показателей по трайлам.
     """
-    print(f"\n🎨 СОЗДАНИЕ ГРАФИКА ДИНАМИКИ КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ")
+    print(f"\n🎨 СОЗДАНИЕ ГРАФИКОВ ДИНАМИКИ КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ")
     print("=" * 50)
     
-    fig, axes = plt.subplots(2, 3, figsize=(24, 12))
-    axes = axes.flatten()
-    
-    # Ключевые показатели для динамики
-    measures_for_dynamics = [
-        "FIXATIONS_PER_SECOND",
-        "AVERAGE_FIXATION_DURATION", 
-        "PUPIL_SIZE_MEAN",
-        "SACCADES_PER_SECOND",
-        "DURATION_PER_WORD",
-        "REGRESSIVE_SACCADES",
+    # Группы показателей
+    measure_groups = [
+        # График 1: Частота и длительность фиксаций
+        {
+            "measures": ["FIXATIONS_PER_SECOND", "AVERAGE_FIXATION_DURATION"],
+            "title": "Фиксации: частота и длительность",
+            "colors": ["#2E86C1", "#E74C3C"],
+            "names": ["Частота фиксаций (ед/с)", "Длительность фиксаций (мс)"],
+            "filename": "key_trial_dynamics_fixations.png"
+        },
+        # График 2: Частота и амплитуда саккад
+        {
+            "measures": ["SACCADES_PER_SECOND", "AVERAGE_SACCADE_AMPLITUDE"], 
+            "title": "Саккады: частота и амплитуда",
+            "colors": ["#28B463", "#F39C12"],
+            "names": ["Частота саккад (ед/с)", "Амплитуда саккад (°)"],
+            "filename": "key_trial_dynamics_saccades.png"
+        },
+        # График 3: Возвратные саккады, длительность на слово, размер зрачка
+        {
+            "measures": ["REGRESSIVE_SACCADES", "DURATION_PER_WORD", "PUPIL_SIZE_MEAN"],
+            "title": "Комплексные показатели",
+            "colors": ["#8E44AD", "#D35400", "#17A2B8"],
+            "names": ["Возвратные саккады (ед)", "Длительность на слово (мс)", "Размер зрачка (у.е.)"],
+            "filename": "key_trial_dynamics_complex.png"
+        }
     ]
-    
-    measure_names_map = {
-        "FIXATIONS_PER_SECOND": "Частота фиксаций (шт/с)",
-        "AVERAGE_FIXATION_DURATION": "Длительность фиксаций (мс)",
-        "PUPIL_SIZE_MEAN": "Размер зрачка (у.е.)",
-        "SACCADES_PER_SECOND": "Частота саккад (шт/с)",
-        "DURATION_PER_WORD": "Длительность на слово (мс)",
-        "REGRESSIVE_SACCADES": "Возвратные саккады (шт)",
-    }
     
     # Цвета для фаз
     phase_colors = {
@@ -779,76 +785,96 @@ def create_key_dynamics_visualization(data):
         else:
             return "stress_recovery"
     
-    for i, measure in enumerate(measures_for_dynamics):
-        ax = axes[i]
+    # Создаем отдельный график для каждой группы показателей
+    for group_idx, group_info in enumerate(measure_groups):
+        print(f"   📊 Создание графика {group_idx + 1}/3: {group_info['title']}")
         
-        # Группируем по трайлам
-        trial_means = data.groupby('INDEX')[measure].mean()
+        # Определяем количество подграфиков
+        n_measures = len(group_info["measures"])
+        if n_measures == 2:
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        else:  # n_measures == 3
+            fig, axes = plt.subplots(1, 3, figsize=(20, 6))
         
-        if len(trial_means) > 0:
-            trials = sorted(trial_means.index)
-            values = [trial_means[t] for t in trials]
-            phases = [get_trial_phase(t) for t in trials]
+        # Если только один подграфик, делаем axes списком
+        if n_measures == 1:
+            axes = [axes]
+        
+        # Для каждого показателя создаем отдельный подграфик
+        for measure_idx, measure in enumerate(group_info["measures"]):
+            ax = axes[measure_idx]
             
-            # Создаем линейный график
-            ax.plot(trials, values, "o-", linewidth=3, markersize=8, color="darkblue")
+            # Группируем по трайлам
+            trial_means = data.groupby('INDEX')[measure].mean()
             
-            # Раскрашиваем точки по фазам
-            for j, (trial, value, phase) in enumerate(zip(trials, values, phases)):
-                ax.scatter(
-                    trial,
-                    value,
-                    s=150,
-                    c=phase_colors.get(phase, "#95A5A6"),
-                    edgecolor="black",
-                    linewidth=2,
-                    zorder=5,
+            if len(trial_means) > 0:
+                trials = sorted(trial_means.index)
+                values = [trial_means[t] for t in trials]
+                phases = [get_trial_phase(t) for t in trials]
+                
+                # Создаем линейный график
+                line_color = group_info["colors"][measure_idx]
+                ax.plot(trials, values, "o-", linewidth=3, markersize=8, 
+                       color=line_color, label=group_info["names"][measure_idx])
+                
+                # Раскрашиваем точки по фазам
+                for j, (trial, value, phase) in enumerate(zip(trials, values, phases)):
+                    ax.scatter(
+                        trial,
+                        value,
+                        s=150,
+                        c=phase_colors.get(phase, "#95A5A6"),
+                        edgecolor=line_color,
+                        linewidth=3,
+                        zorder=5,
+                    )
+                
+                # Подписи процентных изменений под точками (относительно трайла 3)
+                trial3_mean = trial_means[3] if 3 in trial_means else np.mean([trial_means[t] for t in [1, 2, 3]])
+                values_range = max(values) - min(values)
+                for j, (trial, mean_val) in enumerate(zip(trials, values)):
+                    if trial >= 4:  # Только для стрессовых трайлов (4-6)
+                        change_pct = ((mean_val - trial3_mean) / trial3_mean) * 100
+                        symbol = "↗" if change_pct > 0 else "↘"
+                        
+                        ax.text(
+                            trial,
+                            mean_val - values_range * 0.08,
+                            f"{symbol}{abs(change_pct):.1f}%",
+                            ha="center",
+                            va="top",
+                            fontweight="bold",
+                            fontsize=9,
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8),
+                        )
+                
+                # Настройки подграфика
+                ax.set_xlabel("Номер трайла", fontsize=11)
+                unit = UNITS.get(measure, "")
+                ax.set_ylabel(f"Значение, {unit}" if unit else "Значение", fontsize=11)
+                ax.set_title(group_info["names"][measure_idx], fontweight="bold", fontsize=13)
+                ax.set_xticks(trials)
+                ax.grid(True, alpha=0.3)
+                
+                # Вертикальная линия разделяющая фазы
+                ax.axvline(
+                    x=STRESS_THRESHOLD + 0.5, color="red", linestyle="--", alpha=0.7, linewidth=2
                 )
-            
-            # Вертикальная линия разделяющая фазы
-            ax.axvline(
-                x=STRESS_THRESHOLD + 0.5, color="red", linestyle="--", alpha=0.7, linewidth=2
-            )
-            
-            # Определяем паттерн динамики
-            baseline_avg = np.mean(values[:3])
-            stress_avg = np.mean(values[3:])
-            change_pct = ((stress_avg - baseline_avg) / baseline_avg) * 100
-            
-            if change_pct > 10:
-                pattern = "↗ УВЕЛИЧЕНИЕ"
-            elif change_pct < -10:
-                pattern = "↘ УМЕНЬШЕНИЕ"
-            else:
-                pattern = "→ СТАБИЛЬНОСТЬ"
-            
-            # Заголовок с паттерном
-            measure_name = measure_names_map.get(measure, measure)
-            ax.set_title(
-                f"{measure_name}\n{pattern} ({change_pct:+.1f}%)",
-                fontweight="bold",
-                fontsize=12,
-            )
-            
-            ax.set_xlabel("Номер трайла")
-            unit = UNITS.get(measure, "")
-            ax.set_ylabel(f"Значение, {unit}" if unit else "Значение")
-            ax.set_xticks(trials)
-            ax.grid(True, alpha=0.3)
+        
+        # Общий заголовок
+        fig.suptitle(group_info["title"], fontweight="bold", fontsize=16)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.90)
+        
+        # Сохраняем каждый график в отдельный файл
+        filename = f"{RESULTS_DIR}/{group_info['filename']}"
+        plt.savefig(filename, dpi=FIGURE_DPI, bbox_inches="tight")
+        print(f"   ✅ Сохранен: {filename}")
+        
+        show_plot_conditionally()
     
-    plt.suptitle(
-        "📊 ДИНАМИКА КЛЮЧЕВЫХ ПОКАЗАТЕЛЕЙ АЙТРЕКИНГА ПО ТРАЙЛАМ (УРОВЕНЬ ЛЮДЕЙ)",
-        fontsize=16,
-        fontweight="bold",
-    )
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.92)
-    plt.savefig(
-        f"{RESULTS_DIR}/key_trial_dynamics.png",
-        dpi=FIGURE_DPI,
-        bbox_inches="tight",
-    )
-    show_plot_conditionally()
+    print(f"📁 Создано 3 отдельных файла с графиками динамики")
 
 
 def create_clean_stress_dynamics_visualization(data):
@@ -876,12 +902,12 @@ def create_clean_stress_dynamics_visualization(data):
     ]
     
     measure_names_map = {
-        "FIXATIONS_PER_SECOND": "Частота фиксаций (шт/с)",
+        "FIXATIONS_PER_SECOND": "Частота фиксаций (ед/с)",
         "AVERAGE_FIXATION_DURATION": "Длительность фиксаций (мс)",
         "PUPIL_SIZE_MEAN": "Размер зрачка (у.е.)",
-        "SACCADES_PER_SECOND": "Частота саккад (шт/с)",
+        "SACCADES_PER_SECOND": "Частота саккад (ед/с)",
         "DURATION_PER_WORD": "Длительность на слово (мс)",
-        "REGRESSIVE_SACCADES": "Возвратные саккады (шт)",
+        "REGRESSIVE_SACCADES": "Возвратные саккады (ед)",
     }
     
     # Цвета для фаз (только базовые и стрессовые)
